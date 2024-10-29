@@ -261,7 +261,8 @@ int main(int argc, char *argv[])
         memcpy(&sid, &offer->ip.saddr, 4);
         printf("+------------------------------------------------\n");
         printf("| DHCP Server: %s\n", inet_ntoa(sid));
-        printf("| Offered IP %s netmask %s\n", inet_ntoa(yip), inet_ntoa(netmask));
+        printf("| Offered IP %s ", inet_ntoa(yip));
+        printf("netmask %s\n", inet_ntoa(netmask));
         if (router.s_addr)
             printf("| Router: %s\n", inet_ntoa(router));
         if (dns.s_addr)
