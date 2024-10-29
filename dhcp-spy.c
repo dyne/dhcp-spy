@@ -4,7 +4,7 @@
  *
  * (c) 2024 Dyne.org - Licensed under the GPLv3 - see license for details
  *
- * Author: Daniele Lacamera
+ * Authors: Daniele Lacamera and Denis Roio
  */
 
 #include <stdio.h>
