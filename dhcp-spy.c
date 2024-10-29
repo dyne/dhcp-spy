@@ -259,15 +259,13 @@ int main(int argc, char *argv[])
         }
         memcpy(&yip, &offer->yiaddr, 4);
         memcpy(&sid, &offer->ip.saddr, 4);
-        printf("+------------------------------------------------\n");
-        printf("| DHCP Server: %s\n", inet_ntoa(sid));
-        printf("| Offered IP %s ", inet_ntoa(yip));
-        printf("netmask %s\n", inet_ntoa(netmask));
+        printf("Server: %s\n", inet_ntoa(sid));
+        printf("Offered: %s\n", inet_ntoa(yip));
+        printf("Netmask: %s\n", inet_ntoa(netmask));
         if (router.s_addr)
-            printf("| Router: %s\n", inet_ntoa(router));
+            printf("Router: %s\n", inet_ntoa(router));
         if (dns.s_addr)
-            printf("| DNS: %s\n", inet_ntoa(dns));
-        printf("+------------------------------------------------\n");
+            printf("DNS: %s\n", inet_ntoa(dns));
         close(sock);
         ret = 0;
         break;
