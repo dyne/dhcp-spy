@@ -137,7 +137,7 @@ int main(int argc, char *argv[])
     strncpy(ifr.ifr_name, argv[1], IFNAMSIZ - 1);
     sock = socket(PF_INET, SOCK_RAW, IPPROTO_RAW);
     if (sock < 0) {
-        perror("socket() error");
+        fprintf(stderr,"socket() error: %s\n", strerror(errno));
         exit(1);
     }
     /* Retrieve the mac address */
@@ -163,7 +163,7 @@ int main(int argc, char *argv[])
     close(sock);
     sock = socket(PF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
     if (setsockopt(sock, SOL_SOCKET, SO_BROADCAST, val, sizeof(one)) < 0) {
-        perror("setsockopt(SO_BROADCAST) error");
+        fprintf(stderr,"setsockopt(SO_BROADCAST) error: %s\n",strerror(errno));
         exit(1);
     }
 
@@ -224,7 +224,7 @@ int main(int argc, char *argv[])
     dhcp.eth.h_proto = htons(ETH_P_IP);
     ret = sendto(sock, &dhcp, psize + sizeof(struct ethhdr) + sizeof(struct iphdr), 0, (struct sockaddr*)&dst_addr, sizeof(dst_addr));
     if (ret < 0) {
-        perror("send");
+        fprintf(stderr,"send error: %s\n",strerror(errno));
     }
     while (1) {
         struct in_addr yip = {0},
@@ -234,7 +234,7 @@ int main(int argc, char *argv[])
                        dns = {0};
         ret = recv(sock, rxframe, sizeof(rxframe), MSG_TRUNC);
         if (ret == -1) {
-            perror("recv");
+            fprintf(stderr,"recv error: %s\n",strerror(errno));
             break;
         }
         offer = (struct dhcp_msg *)rxframe;
@@ -275,4 +275,3 @@ int main(int argc, char *argv[])
     close(sock);
     return ret;
 }
-
