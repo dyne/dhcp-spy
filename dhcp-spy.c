@@ -21,11 +21,87 @@
 #include <sys/ioctl.h>
 #include <linux/if_packet.h>
 #include <linux/if_ether.h>
+#include <linux/if_arp.h>
+#include <time.h>
+#include <poll.h>
+#include <signal.h>
 
 #include <sys/random.h>
 
+#define DEFAULT_TIMEOUT 5 /* seconds */
+
 #define DHCP_SERVER_PORT 67
 #define DHCP_CLIENT_PORT 68
+/* Globals to keep track of the original MAC address */
+
+static uint8_t original_mac[6] = {0};
+static int custom_mac = 0;
+static char devname[IFNAMSIZ] = "";
+
+
+static int set_macaddr(const char *dev, uint8_t *mac)
+{
+    struct ifreq ifr;
+    int sock = socket(PF_INET, SOCK_RAW, IPPROTO_RAW);
+    int ret = 0;
+    memset(&ifr, 0, sizeof(ifr));
+    strncpy(ifr.ifr_name, dev, IFNAMSIZ - 1);
+    ret = ioctl(sock, SIOCGIFFLAGS, &ifr);
+    if (ret == 0) { 
+        ifr.ifr_flags &= ~IFF_UP;
+        ret = ioctl(sock, SIOCSIFFLAGS, &ifr);
+    }
+    if (ret == 0) {
+        ifr.ifr_hwaddr.sa_family = ARPHRD_ETHER;
+        memcpy(ifr.ifr_hwaddr.sa_data, mac, 6);
+        ret = ioctl(sock, SIOCSIFHWADDR, &ifr);
+    }
+    if (ret == 0) {
+        ret = ioctl(sock, SIOCGIFFLAGS, &ifr);
+    }
+    if (ret == 0) {
+        ifr.ifr_flags |= IFF_UP;
+        ret = ioctl(sock, SIOCSIFFLAGS, &ifr);
+    }
+    if (ret == 0) {
+        ifr.ifr_flags |= IFF_UP | IFF_RUNNING;
+        ret = ioctl(sock, SIOCSIFFLAGS, &ifr);
+    }
+    return ret;
+}
+
+
+/* atexit() handler to restore the original MAC address */
+static void restore_mac(void)
+{
+    if (custom_mac) {
+        int sock = socket(PF_INET, SOCK_RAW, IPPROTO_RAW);
+        struct ifreq ifr;
+        custom_mac = 0;
+        if (sock < 0) {
+            fprintf(stderr,"socket() error: %s\n", strerror(errno));
+            exit(1);
+        }
+        memset(&ifr, 0, sizeof(ifr));
+        strncpy(ifr.ifr_name, devname, IFNAMSIZ - 1);
+        memcpy(ifr.ifr_hwaddr.sa_data, original_mac, 6);
+        if (set_macaddr(devname, original_mac) < 0) {
+            fprintf(stderr, "Cannot restore the original mac address on device %s\n", devname);
+            exit(1);
+        } else {
+            fprintf(stderr, "Restored original mac address on device %s\n", devname);
+            close(sock);
+        }
+    }
+}
+
+static void sighandler(int signum)
+{
+    (void)signum;
+    restore_mac();
+    exit(0);
+}
+
 
 struct __attribute__((packed)) udp_hdr {
     uint16_t sport, dport, len, sum;
@@ -107,6 +183,12 @@ static uint16_t transport_checksum(union transport_pseudo_header *ph, void *_dat
     return ~sum;
 }
 
+static void usage(const char *argv0)
+{
+    fprintf(stderr, "Usage: %s [-m macaddr] [-t timeout] <interface>\n", argv0);
+    exit(1);
+}
+
 int main(int argc, char *argv[])
 {
     int sock;
@@ -121,6 +203,10 @@ int main(int argc, char *argv[])
     struct sockaddr_ll dst_addr;
     uint8_t rxframe[1514];
     uint32_t dhcp_xid;
+    int opt_idx = 1;
+    long timeout = DEFAULT_TIMEOUT;
+    uint8_t macaddr[6] = {0};
+    time_t expire;
     memset(&dhcp, 0, sizeof(dhcp));
     memset(&dhcp.options, 0xFF, sizeof(dhcp.options));
     memset(&ifr, 0, sizeof(ifr));
@@ -129,22 +215,77 @@ int main(int argc, char *argv[])
     getrandom(&dhcp_xid, sizeof(dhcp_xid), 0);
     getrandom(&dhcp.ip.id, sizeof(dhcp.ip.id), 0);
 
-    if (argc != 2) {
-        fprintf(stderr, "Usage: %s <interface>\n", argv[0]);
-        exit(1);
+    signal(SIGINT, sighandler);
+    signal(SIGTERM, sighandler);
+    signal(SIGQUIT, sighandler);
+    signal(SIGHUP, sighandler);
+    atexit(restore_mac);
+
+    ifr.ifr_name[0] = '\0';
+
+    if (argc < 2) {
+        usage(argv[0]); /* Implies exit() */
+    }
+    while (opt_idx < argc) {
+        if (strcmp(argv[opt_idx], "-t") == 0) {
+            if (++opt_idx < argc) {
+                errno = 0;
+                timeout = strtol(argv[opt_idx], NULL, 10); 
+                if (errno) {
+                    fprintf(stderr, "Invalid timeout value\n");
+                    usage(argv[0]);
+                }
+            } else {
+                fprintf(stderr, "Option -t requires an argument\n");
+                usage(argv[0]);
+            }
+        } else if (strcmp(argv[opt_idx], "-m") == 0) {
+            if (++opt_idx < argc) {
+                int i;
+                char *p;
+                for (i =  0; i < 6; i++) {
+                    macaddr[i] = strtol(argv[opt_idx] + i * 3, &p, 16);
+                    if (i == 5) {
+                        if (*p != '\0') {
+                            fprintf(stderr, "Invalid MAC address\n");
+                            usage(argv[0]);
+                        } else break;
+                    } 
+                    if (p == NULL || *p != ':') {
+                        fprintf(stderr, "Invalid MAC address\n");
+                        usage(argv[0]);
+                    }
+                }
+                fprintf(stderr, "Setting MAC address to %02x:%02x:%02x:%02x:%02x:%02x\n",
+                        macaddr[0], macaddr[1], macaddr[2], macaddr[3], macaddr[4], macaddr[5]);
+                custom_mac = 1;
+            } else {
+                fprintf(stderr, "Option -m requires an argument\n");
+                usage(argv[0]);
+            }
+        } else if (opt_idx == argc - 1) {
+            strncpy(ifr.ifr_name, argv[opt_idx], IFNAMSIZ - 1);
+            strncpy(devname, argv[opt_idx], IFNAMSIZ - 1);
+            break;
+        } else {
+            fprintf(stderr, "Invalid argument: %s\n", argv[opt_idx]);
+            usage(argv[0]);
+        }
+        opt_idx++;
+    }
+    if (strlen(ifr.ifr_name) == 0) {
+        usage(argv[0]);
     }
 
-    strncpy(ifr.ifr_name, argv[1], IFNAMSIZ - 1);
     sock = socket(PF_INET, SOCK_RAW, IPPROTO_RAW);
     if (sock < 0) {
         fprintf(stderr,"socket() error: %s\n", strerror(errno));
         exit(1);
     }
-    /* Retrieve the mac address */
     /* Retrieve the interface index */
     if (ioctl(sock, SIOCGIFINDEX, &ifr) < 0) {
         fprintf(stderr,
-                "ioctl() error: Cannot get the interface index for %s:%s\n", argv[1],
+                "ioctl() error: Cannot get the interface index for %s:%s\n", devname,
                 strerror(errno));
         exit(1);
     }
@@ -153,11 +294,31 @@ int main(int argc, char *argv[])
     dst_addr.sll_ifindex = ifr.ifr_ifindex;
     dst_addr.sll_halen = 6;
 
+    /* Retrieve the mac address */
     if (ioctl(sock, SIOCGIFHWADDR, &ifr) < 0) {
         fprintf(stderr,
-                "ioctl() error: Cannot get the mac address for %s:%s\n", argv[1],
+                "ioctl() error: Cannot get the mac address for %s:%s\n", devname,
                 strerror(errno));
         exit(1);
+    }
+    if (custom_mac) {
+        /* Temporarily changing the MAC address of the interface */
+        memcpy(original_mac, ifr.ifr_hwaddr.sa_data, 6);
+        if (set_macaddr(devname, macaddr) < 0) {
+            fprintf(stderr, "Cannot set the MAC address on device %s:%s\n", devname,
+                    strerror(errno));
+            custom_mac = 0;
+            exit(1);
+        }
+        fprintf(stderr, "Changed MAC address to %02x:%02x:%02x:%02x:%02x:%02x\n",
+                macaddr[0], macaddr[1], macaddr[2], macaddr[3], macaddr[4], macaddr[5]);
+        if (ioctl(sock, SIOCGIFHWADDR, &ifr) < 0) {
+            fprintf(stderr,
+                    "ioctl() error: Cannot get the mac address for %s:%s\n", devname,
+                    strerror(errno));
+            exit(1);
+        }
+        sleep(1);
     }
     memcpy(dst_addr.sll_addr, ifr.ifr_hwaddr.sa_data, 6);
     close(sock);
@@ -226,12 +387,25 @@ int main(int argc, char *argv[])
     if (ret < 0) {
         fprintf(stderr,"send error: %s\n",strerror(errno));
     }
-    while (1) {
+    expire = time(NULL) + timeout;
+    while (expire > time(NULL)) {
         struct in_addr yip = {0},
                        sid = {0},
                        netmask = {0},
                        router = {0},
                        dns = {0};
+
+        struct pollfd pfd;
+        pfd.fd = sock;
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+        ret = poll(&pfd, 1, 1000);
+        if (ret == -1) {
+            fprintf(stderr,"socket error: %s\n",strerror(errno));
+            break;
+        }
+        if (ret == 0) 
+            continue;
         ret = recv(sock, rxframe, sizeof(rxframe), MSG_TRUNC);
         if (ret == -1) {
             fprintf(stderr,"recv error: %s\n",strerror(errno));
@@ -268,8 +442,11 @@ int main(int argc, char *argv[])
             printf("DNS: %s\n", inet_ntoa(dns));
         close(sock);
         ret = 0;
-        break;
+        goto out;
     }
+    fprintf(stderr, "No DHCP servers found.\n");
+    ret = 67;
+out:
     close(sock);
     return ret;
 }
